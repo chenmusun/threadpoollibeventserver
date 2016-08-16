@@ -1,0 +1,8 @@
+<server>
+  <tcpport>5678</tcpport>
+  <udpport>1234</udpport>
+  <threadnum>12</threadnum>
+  <timespan>2</timespan>
+  <overtime>200</overtime>
+  <threadpool>10</threadpool>
+</server>
