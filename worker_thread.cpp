@@ -134,11 +134,13 @@ void WorkerThread::HandleTcpConn(WorkerThread* pwt)
     pwt->AddTcpConnItem(ptci);
     bufferevent_setcb(bev, TcpConnReadCb, NULL/*ConnWriteCb*/, TcpConnEventCB,&ptci->sessionid/*arg*/);
     bufferevent_enable(bev, EV_READ /*| EV_WRITE*/ );
+    LOG(DEBUG)<<"got an tcp connection and session id is "<<ptci->sessionid;
 }
 
 
 void WorkerThread::TcpConnReadCb(bufferevent * bev,void *ctx){
     unsigned int sessionid=*(static_cast<unsigned int *>(ctx));
+
     // std::shared_ptr<TcpConnItem> ptci=std::shared_ptr<TcpConnItem>(ctx);
     std::shared_ptr<TcpConnItem> ptci=pthread_info->FindTcpConnItem(sessionid);
         struct evbuffer * in=bufferevent_get_input(bev);
@@ -147,66 +149,73 @@ void WorkerThread::TcpConnReadCb(bufferevent * bev,void *ctx){
         unsigned char ch[10]={0};
         unsigned short len=0;
         if(ptci->packettype!=TCPTERMINAL){
+            LOG(DEBUG)<<"Got data from "<<sessionid<<" tcp connection";
             if(ptci->HasRemaining())
+            {
+                if(!ptci->AllocateCopyData(in)){
+                    LOG(WARNING)<<"AllocateCopyData failed";
+                    ptci->FreeData();
+                }
+
+                //has received an complete packet
+                if(!ptci->HasRemaining()){
+                    TcpConnItemData data(ptci,ptci->data,ptci->totallength);
+                    ptci->ReleaseDataOwnership();//释放所有权
+                    std::shared_ptr<ThreadPoolMethod> method=pthread_info->ls_->map_thread_pool_method_["dxpupload"];
+                    (*method)(data);
+                }
+            }
+            else{
+                if(evbuffer_copyout(in,ch,4)!=-1)
                 {
-                        if(!ptci->AllocateCopyData(in)){
-                                LOG(WARNING)<<"AllocateCopyData failed";
-                                ptci->FreeData();
-                        }
+                    if(ch[0]==0x55){//DXP PROTOCOL
+                        uint8_t lsb=ch[2];
+                        uint8_t msb=0;
+                        if(lsb&0x01)
+                            msb=ch[3];
 
-                        //has received an complete packet
-                        if(!ptci->HasRemaining()){
-                            TcpConnItemData data(ptci,ptci->data,ptci->totallength);
-                            ptci->ReleaseDataOwnership();//释放所有权
-                            std::shared_ptr<ThreadPoolMethod> method=pthread_info->ls_->map_thread_pool_method_["dxpupload"];
-                            (*method)(data);
-                        }
-                }
-                else{
-                        if(evbuffer_copyout(in,ch,4)!=-1)
+                        lsb=lsb>>1;
+                        len=lsb+msb*128;
+                        if(len>127)
+                            len+=4;
+                        else
+                            len+=3;
+
+                        // ptci->SetProtocol(DXP);
+                    }
+                    else{
+                        char tmp[1000]={0};
+                        if(evbuffer_copyout(in,tmp,1000)!=-1)
                         {
-                                if(ch[0]==0x55){//DXP PROTOCOL
-                                        uint8_t lsb=ch[2];
-                                        uint8_t msb=0;
-                                        if(lsb&0x01)
-                                                msb=ch[3];
-
-                                        lsb=lsb>>1;
-                                        unsigned short len=lsb+msb*128;
-                                        if(len>127)
-                                                len+=4;
-                                        else
-                                                len+=3;
-
-                                        len=lsb+msb*128;
-
-                                        unsigned short occupied=0;
-
-                                        if(len>127)
-                                                len+=4;
-                                        else
-                                                len+=3;
-
-                                        // ptci->SetProtocol(DXP);
-                                }
-                                else{//other protocols
-                                        // ptci->SetProtocol(UNKNOWN);
-                                }
-
-                                if(!ptci->AllocateCopyData(in,len)){
-                                        LOG(WARNING)<<"AllocateCopyData failed";
-                                        ptci->FreeData();
-                                }
-
-                        }else{
-                                LOG(WARNING)<<"Get the protocol name failed";
-                                evbuffer_drain(in,65535);//clear the buffer
+                            LOG(WARNING)<<"unknown protocol and data is "<<tmp;
                         }
+                        return;
+                        // ptci->SetProtocol(UNKNOWN);
+                    }
 
+                    if(!ptci->AllocateCopyData(in,len)){
+                        LOG(WARNING)<<"AllocateCopyData failed";
+                        ptci->FreeData();
+                        return;
+                    }
+
+                    //has received an complete packet
+                    if(!ptci->HasRemaining()){
+                        TcpConnItemData data(ptci,ptci->data,ptci->totallength);
+                        ptci->ReleaseDataOwnership();//释放所有权
+                        std::shared_ptr<ThreadPoolMethod> method=pthread_info->ls_->map_thread_pool_method_["dxpupload"];
+                        (*method)(data);
+                    }
+
+                }else{
+                    LOG(ERROR)<<"evbuffer_copyout data failed from "<<sessionid<<" tcp connection";
+                    evbuffer_drain(in,65535);//clear the buffer
                 }
+
+            }
         }
         else{//HANDLE CMD
-
+            LOG(DEBUG)<<"Got a cmd from "<<sessionid<<" tcp connection";
         }
 
 
